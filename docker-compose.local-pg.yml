@@ -1,0 +1,59 @@
+services:
+  litellm:
+    build:
+      context: .
+      args:
+        target: runtime
+    image: docker.litellm.ai/berriai/litellm:main-stable
+    ports:
+      - "4000:4000"
+    volumes:
+      # Mount local source code for development
+      - ./litellm:/app/.venv/lib/python3.13/site-packages/litellm:ro
+      # Mount config file
+      - ./proxy_server_config.yaml:/app/config.yaml:ro
+    environment:
+      # Use the PostgreSQL instance managed by 1Panel.
+      # Set DATABASE_URL and LITELLM_SALT_KEY in .env before starting this compose file.
+      DATABASE_URL: "${DATABASE_URL:?Set DATABASE_URL in .env}"
+      STORE_MODEL_IN_DB: "${STORE_MODEL_IN_DB:-True}"
+      LITELLM_UI_PATH: "/app/litellm/proxy/_experimental/out"
+      FORWARDED_ALLOW_IPS: "*"
+      # Salt key for decrypting encrypted fields in DB (must match the key used to encrypt)
+      LITELLM_SALT_KEY: "${LITELLM_SALT_KEY:?Set LITELLM_SALT_KEY in .env}"
+    env_file:
+      - .env
+    networks:
+      - default
+      - 1panel-network
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  prometheus:
+    image: prom/prometheus
+    profiles:
+      - monitoring
+    volumes:
+      - prometheus_data:/prometheus
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+    restart: always
+
+volumes:
+  prometheus_data:
+    driver: local
+
+networks:
+  1panel-network:
+    external: true
