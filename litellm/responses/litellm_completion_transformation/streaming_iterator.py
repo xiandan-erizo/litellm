@@ -388,9 +388,9 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         if "text" in self.responses_api_request:
             response_created_event_data["text"] = self.responses_api_request["text"]
         if "tool_choice" in self.responses_api_request:
-            # Transform tool_choice from dict format (e.g., {"type": "auto"}) to string format
+            # Normalize tool_choice to Responses API format for response.created.
             response_created_event_data["tool_choice"] = (
-                LiteLLMCompletionResponsesConfig._transform_tool_choice(
+                LiteLLMCompletionResponsesConfig._transform_tool_choice_to_responses(
                     self.responses_api_request["tool_choice"]
                 )
                 or "auto"
@@ -398,7 +398,11 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         else:
             response_created_event_data["tool_choice"] = "auto"
         if "tools" in self.responses_api_request:
-            response_created_event_data["tools"] = self.responses_api_request["tools"]
+            response_created_event_data["tools"] = (
+                LiteLLMCompletionResponsesConfig.transform_responses_api_tools_to_response_metadata_tools(
+                    self.responses_api_request["tools"]
+                )
+            )
         else:
             response_created_event_data["tools"] = []
         if "top_p" in self.responses_api_request:

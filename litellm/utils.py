@@ -5936,6 +5936,9 @@ def _get_model_info_helper(  # noqa: PLR0915
                 supports_web_search=_model_info.get("supports_web_search", None),
                 supports_url_context=_model_info.get("supports_url_context", None),
                 supports_reasoning=_model_info.get("supports_reasoning", None),
+                requires_tool_call_reasoning_content=_model_info.get(
+                    "requires_tool_call_reasoning_content", None
+                ),
                 supports_none_reasoning_effort=_model_info.get(
                     "supports_none_reasoning_effort", None
                 ),

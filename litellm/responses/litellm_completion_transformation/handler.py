@@ -58,6 +58,7 @@ class LiteLLMCompletionTransformationHandler:
                 **kwargs,
             )
 
+        litellm_completion_request.pop("_add_tool_call_reasoning_content", None)
         completion_args = {}
         completion_args.update(kwargs)
         completion_args.update(litellm_completion_request)
@@ -109,6 +110,7 @@ class LiteLLMCompletionTransformationHandler:
                 litellm_completion_request=litellm_completion_request,
             )
 
+        litellm_completion_request.pop("_add_tool_call_reasoning_content", None)
         acompletion_args = {}
         acompletion_args.update(kwargs)
         acompletion_args.update(litellm_completion_request)

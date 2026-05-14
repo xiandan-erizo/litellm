@@ -1325,33 +1325,36 @@ try:
             verbose_proxy_logger.debug(f"Found UI ready marker: {marker_file}")
             return True
 
-        # Fallback signal: Detect restructuring pattern
-        # After restructuring, routes exist as directories with index.html inside
-        # (e.g., login/index.html instead of login.html)
-        # Check for main index.html first (basic UI structure requirement)
+        # Fallback signal: verify every top-level exported route has been
+        # restructured. A partial match is not enough: Next.js export can leave
+        # route data directories (for example login/) without login/index.html,
+        # which makes extensionless routes like /ui/login serve the 404 page.
         if not os.path.exists(os.path.join(ui_dir, "index.html")):
             return False
 
-        # Look for ANY subdirectory with index.html (proves restructuring happened)
-        # Ignore directories starting with _ (Next.js internals like _next)
         try:
-            for entry in os.scandir(ui_dir):
-                if entry.is_dir() and not entry.name.startswith("_"):
-                    index_path = os.path.join(entry.path, "index.html")
-                    if os.path.exists(index_path):
-                        # Found at least one restructured route - this proves the pattern
-                        verbose_proxy_logger.debug(
-                            f"Detected restructured UI via pattern: found {entry.name}/index.html"
-                        )
-                        return True
+            route_html_files = [
+                entry
+                for entry in os.scandir(ui_dir)
+                if entry.is_file()
+                and entry.name.endswith(".html")
+                and entry.name != "index.html"
+            ]
+            if not route_html_files:
+                return True
+
+            for entry in route_html_files:
+                route_name = os.path.splitext(entry.name)[0]
+                index_path = os.path.join(ui_dir, route_name, "index.html")
+                if not os.path.exists(index_path):
+                    return False
+
+            return True
         except (PermissionError, OSError) as e:
             verbose_proxy_logger.debug(
                 f"Could not scan {ui_dir} for restructuring detection: {e}"
             )
             return False
-
-        # No restructured routes found
-        return False
 
     def _try_populate_ui_directory(
         source_path: str, target_path: str

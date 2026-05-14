@@ -15,11 +15,139 @@ sys.path.insert(
 )  # Adds the parent directory to the system path
 
 import litellm
+from litellm.responses.litellm_completion_transformation.transformation import (
+    LiteLLMCompletionResponsesConfig,
+)
 from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
 
 
 class TestUseResponsesApiBridgeFlag:
     """Test that bridge opt-in forces the chat completions path."""
+
+    def test_responses_tool_choice_function_name_maps_to_chat_format(self):
+        """Responses tool_choice uses top-level name; chat completions needs function.name."""
+        assert LiteLLMCompletionResponsesConfig._transform_tool_choice(
+            {"type": "function", "name": "get_weather"}
+        ) == {"type": "function", "function": {"name": "get_weather"}}
+
+    def test_chat_tool_choice_function_name_maps_to_responses_format(self):
+        """Response events need Responses tool_choice with a top-level name."""
+        assert LiteLLMCompletionResponsesConfig._transform_tool_choice_to_responses(
+            {"type": "function", "function": {"name": "get_weather"}}
+        ) == {"type": "function", "name": "get_weather"}
+
+    def test_chat_completion_tool_format_preserved_by_bridge(self):
+        """Codex-style chat completion tools should not lose function metadata."""
+        tools, web_search_options = (
+            LiteLLMCompletionResponsesConfig.transform_responses_api_tools_to_chat_completion_tools(
+                [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "description": "Get weather",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"city": {"type": "string"}},
+                                "required": ["city"],
+                            },
+                        },
+                    }
+                ]
+            )
+        )
+
+        assert web_search_options is None
+        assert tools == [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                        "required": ["city"],
+                    },
+                    "strict": False,
+                },
+            }
+        ]
+
+    def test_responses_only_tools_are_dropped_by_bridge(self):
+        """Tools with no chat completions equivalent should not leak upstream."""
+        tools, web_search_options = (
+            LiteLLMCompletionResponsesConfig.transform_responses_api_tools_to_chat_completion_tools(
+                [
+                    {"type": "custom", "name": "shell"},
+                    {"type": "local_shell", "name": "shell"},
+                    {"type": "namespace", "name": "terminal"},
+                    {"type": "file_search"},
+                    {"type": "image_generation"},
+                    {"type": "code_interpreter"},
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "read",
+                            "parameters": {"type": "object"},
+                        },
+                    },
+                ]
+            )
+        )
+
+        assert web_search_options is None
+        assert len(tools) == 1
+        assert tools[0]["function"]["name"] == "read"  # type: ignore[index]
+
+    def test_response_metadata_tools_preserve_responses_only_tools(self):
+        """response.created metadata should reflect requested Responses tools."""
+        tools = (
+            LiteLLMCompletionResponsesConfig.transform_responses_api_tools_to_response_metadata_tools(
+                [
+                    {"type": "web_search_preview", "search_context_size": "low"},
+                    {"type": "file_search", "vector_store_ids": ["vs_123"]},
+                    {"type": "code_interpreter", "container": {"type": "auto"}},
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "read",
+                            "description": "Read a file",
+                            "parameters": {"type": "object"},
+                        },
+                    },
+                ]
+            )
+        )
+
+        assert tools[0]["type"] == "web_search_preview"
+        assert tools[1]["type"] == "file_search"
+        assert tools[1]["vector_store_ids"] == ["vs_123"]
+        assert tools[2]["type"] == "code_interpreter"
+        assert tools[3]["type"] == "function"
+        assert tools[3]["name"] == "read"
+
+    def test_responses_tool_format_maps_to_chat_format(self):
+        """Responses API function tools should still map to chat completion tools."""
+        tools, web_search_options = (
+            LiteLLMCompletionResponsesConfig.transform_responses_api_tools_to_chat_completion_tools(
+                [
+                    {
+                        "type": "function",
+                        "name": "get_weather",
+                        "description": "Get weather",
+                        "parameters": {
+                            "properties": {"city": {"type": "string"}},
+                            "required": ["city"],
+                        },
+                    }
+                ]
+            )
+        )
+
+        assert web_search_options is None
+        assert tools[0]["function"]["name"] == "get_weather"  # type: ignore[index]
+        assert tools[0]["function"]["parameters"]["type"] == "object"  # type: ignore[index]
 
     @patch(
         "litellm.responses.main.litellm_completion_transformation_handler.response_api_handler"
@@ -280,3 +408,182 @@ class TestUseResponsesApiBridgeFlag:
 
         mock_native_handler.assert_called_once()
         assert result is not None
+
+    def test_reasoning_input_item_detected_correctly(self):
+        """Reasoning items from OpenAI thinking models should be recognized."""
+        assert LiteLLMCompletionResponsesConfig._is_input_item_reasoning(
+            {
+                "type": "reasoning",
+                "id": "rs_123",
+                "summary": [{"type": "summary_text", "text": "Thinking..."}],
+            }
+        ) is True
+
+    def test_non_reasoning_items_not_detected_as_reasoning(self):
+        """Other input item types should not be detected as reasoning."""
+        assert LiteLLMCompletionResponsesConfig._is_input_item_reasoning(
+            {"type": "function_call", "call_id": "call_123"}
+        ) is False
+        assert LiteLLMCompletionResponsesConfig._is_input_item_reasoning(
+            {"type": "message", "role": "user", "content": "Hello"}
+        ) is False
+        assert LiteLLMCompletionResponsesConfig._is_input_item_reasoning(
+            {
+                "type": "function_call_output",
+                "call_id": "call_123",
+                "output": "result",
+            }
+        ) is False
+
+    def test_reasoning_input_item_transforms_to_assistant_message(self):
+        """Reasoning items should become assistant messages with reasoning_content."""
+        result = LiteLLMCompletionResponsesConfig._transform_responses_api_reasoning_to_chat_completion_message(
+            {
+                "type": "reasoning",
+                "id": "rs_abc",
+                "summary": [
+                    {"type": "summary_text", "text": "Let me think about this..."}
+                ],
+            }
+        )
+
+        assert len(result) == 1
+        msg = result[0]
+        assert msg["role"] == "assistant"
+        assert msg.get("reasoning_content") == "Let me think about this..."
+        assert msg.get("content") == ""
+
+    def test_reasoning_with_multiple_summary_parts(self):
+        """Reasoning with multiple summary parts should concatenate them."""
+        result = LiteLLMCompletionResponsesConfig._transform_responses_api_reasoning_to_chat_completion_message(
+            {
+                "type": "reasoning",
+                "id": "rs_multi",
+                "summary": [
+                    {"type": "summary_text", "text": "First thought..."},
+                    {"type": "summary_text", "text": "Second thought..."},
+                ],
+            }
+        )
+
+        assert len(result) == 1
+        assert result[0]["reasoning_content"] == "First thought...Second thought..."
+
+    def test_empty_reasoning_summary_returns_empty_list(self):
+        """Reasoning with no summary text should return empty list."""
+        result = LiteLLMCompletionResponsesConfig._transform_responses_api_reasoning_to_chat_completion_message(
+            {"type": "reasoning", "id": "rs_empty", "summary": []}
+        )
+        assert result == []
+
+        result = LiteLLMCompletionResponsesConfig._transform_responses_api_reasoning_to_chat_completion_message(
+            {
+                "type": "reasoning",
+                "id": "rs_none",
+                "summary": [{"type": "summary_text", "text": ""}],
+            }
+        )
+        assert result == []
+
+    def test_reasoning_input_item_in_full_input_transformation(self):
+        """Reasoning items should be properly handled in full input transformation."""
+        messages = LiteLLMCompletionResponsesConfig._transform_response_input_param_to_chat_completion_message(
+            [
+                {"type": "message", "role": "user", "content": "What is 2+2?"},
+                {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "summary": [{"type": "summary_text", "text": "Calculating..."}],
+                },
+                {"type": "message", "role": "assistant", "content": "4"},
+            ]
+        )
+
+        # Should have user message, reasoning message, and assistant message
+        assert len(messages) == 3
+        assert messages[0]["role"] == "user"
+        assert messages[1]["role"] == "assistant"
+        assert messages[1].get("reasoning_content") == "Calculating..."
+        assert messages[2]["role"] == "assistant"
+        assert messages[2].get("content") == "4"
+
+    def test_function_call_input_does_not_get_reasoning_content_by_default(self):
+        """Assistant tool-call history should not add provider-specific fields by default."""
+        messages = LiteLLMCompletionResponsesConfig._transform_response_input_param_to_chat_completion_message(
+            [
+                {
+                    "type": "function_call",
+                    "call_id": "call_123",
+                    "name": "get_time",
+                    "arguments": "{}",
+                    "status": "completed",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_123",
+                    "output": "now",
+                },
+            ]
+        )
+
+        assistant_messages = [
+            message for message in messages if message.get("role") == "assistant"
+        ]
+        assert len(assistant_messages) == 1
+        assert assistant_messages[0].get("tool_calls")
+        assert "reasoning_content" not in assistant_messages[0]
+
+    def test_function_call_input_gets_reasoning_content_when_model_info_requires_it(
+        self,
+    ):
+        """Deployment metadata can opt into reasoning_content compatibility."""
+        request = LiteLLMCompletionResponsesConfig.transform_responses_api_request_to_chat_completion_request(
+            model="mimo-v2.5-pro",
+            input=[
+                {
+                    "type": "function_call",
+                    "call_id": "call_123",
+                    "name": "get_time",
+                    "arguments": "{}",
+                    "status": "completed",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_123",
+                    "output": "now",
+                },
+            ],
+            responses_api_request={},
+            custom_llm_provider="openai",
+            model_info={"requires_tool_call_reasoning_content": True},
+        )
+
+        assistant_messages = [
+            message
+            for message in request["messages"]
+            if message.get("role") == "assistant"
+        ]
+        assert len(assistant_messages) == 1
+        assert assistant_messages[0].get("reasoning_content") == " "
+        assert request["_add_tool_call_reasoning_content"] is True
+
+    def test_existing_tool_call_reasoning_content_is_preserved(self):
+        """Existing reasoning_content on assistant tool calls should not be overwritten."""
+        messages = LiteLLMCompletionResponsesConfig._ensure_assistant_tool_calls_have_reasoning_content(
+            [
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "reasoning_content": "actual thinking",
+                    "tool_calls": [
+                        {
+                            "id": "call_123",
+                            "type": "function",
+                            "function": {"name": "get_time", "arguments": "{}"},
+                        }
+                    ],
+                }
+            ]
+        )
+
+        assert messages[0].get("reasoning_content") == "actual thinking"
