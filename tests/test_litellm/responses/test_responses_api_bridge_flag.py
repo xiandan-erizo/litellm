@@ -100,6 +100,31 @@ class TestUseResponsesApiBridgeFlag:
         assert len(tools) == 1
         assert tools[0]["function"]["name"] == "read"  # type: ignore[index]
 
+    def test_tool_output_content_parts_are_flattened_to_text(self):
+        """Tool message content should stay text-only for OpenAI-compatible chat providers."""
+        messages = (
+            LiteLLMCompletionResponsesConfig._transform_responses_api_tool_call_output_to_chat_completion_message(
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_123",
+                    "output": [
+                        {"type": "input_text", "text": "screenshot saved"},
+                        {
+                            "type": "input_image",
+                            "image_url": {"url": "data:image/png;base64,abc"},
+                        },
+                    ],
+                }
+            )
+        )
+
+        assert len(messages) == 1
+        assert messages[0]["role"] == "tool"  # type: ignore[index]
+        assert (  # type: ignore[index]
+            messages[0]["content"]
+            == "screenshot saved[image: data:image/png;base64,abc]"
+        )
+
     def test_response_metadata_tools_preserve_responses_only_tools(self):
         """response.created metadata should reflect requested Responses tools."""
         tools = (

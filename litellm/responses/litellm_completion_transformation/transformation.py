@@ -1285,7 +1285,7 @@ class LiteLLMCompletionResponsesConfig:
         ) -> Any:
             """
             Normalize Responses API function_call_output.output into a shape that downstream
-            chat adapters (esp. Gemini) can reliably consume.
+            chat adapters can reliably consume.
 
             OpenAI Responses API typically uses:
             - output: string
@@ -1293,9 +1293,11 @@ class LiteLLMCompletionResponsesConfig:
             Some clients/adapters send:
             - output: [{"type": "input_text", "text": "..."}, {"type": "input_image", ...}]
 
-            For chat tool messages we normalize to either:
-            - string (preferred)
-            - list of {"type": "text"|"image_url", ...} blocks (for multimodal tool outputs)
+            For chat tool messages we normalize these structured outputs to a
+            string. Several OpenAI-compatible chat providers reject tool message
+            content blocks like {"type": "image_url", ...} with errors such as
+            "`text` is not set", even though user messages may support those
+            blocks.
             """
             if output is None:
                 return ""
@@ -1304,44 +1306,36 @@ class LiteLLMCompletionResponsesConfig:
 
             # Some adapters represent tool output as a list of "input_*" parts
             if isinstance(output, list):
-                normalized_blocks: List[Dict[str, Any]] = []
                 text_acc: List[str] = []
+                unknown_parts: List[Any] = []
                 for part in output:
                     if not isinstance(part, dict):
+                        unknown_parts.append(part)
                         continue
                     part_type = part.get("type")
                     if part_type in ("input_text", "output_text", "text"):
                         txt = part.get("text")
                         if isinstance(txt, str) and txt:
                             text_acc.append(txt)
-                            normalized_blocks.append({"type": "text", "text": txt})
                     elif part_type in ("input_image", "image_url"):
                         image_url_val = part.get("image_url") or part.get("url")
+                        image_url: Optional[str] = None
                         if isinstance(image_url_val, dict):
-                            url = image_url_val.get("url")
-                            if isinstance(url, str) and url:
-                                normalized_blocks.append(
-                                    {"type": "image_url", "image_url": {"url": url}}
-                                )
+                            image_url = image_url_val.get("url")
                         elif isinstance(image_url_val, str) and image_url_val:
-                            normalized_blocks.append(
-                                {
-                                    "type": "image_url",
-                                    "image_url": {"url": image_url_val},
-                                }
-                            )
+                            image_url = image_url_val
+                        if image_url:
+                            text_acc.append(f"[image: {image_url}]")
+                    else:
+                        unknown_parts.append(part)
 
-                # Prefer structured blocks if we have images; otherwise return a string.
-                if any(b.get("type") == "image_url" for b in normalized_blocks):
-                    # Ensure we include any accumulated text as text blocks too
-                    return normalized_blocks
                 if text_acc:
                     return "".join(text_acc)
                 try:
                     # last resort: keep something meaningful for providers that require a string
                     import json as _json
 
-                    return _json.dumps(output)
+                    return _json.dumps(unknown_parts or output)
                 except Exception:
                     return str(output)
 
