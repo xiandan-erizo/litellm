@@ -666,6 +666,24 @@ def _pop_use_chat_completions_api_kw(kwargs: Dict[str, Any]) -> bool:
     return bool(use_cc)
 
 
+def _build_compact_responses_bridge_instructions(
+    instructions: Optional[str],
+) -> str:
+    """
+    Build fallback compaction instructions for providers that only support chat
+    completions behind the Responses bridge.
+    """
+    bridge_instructions = (
+        "Compact the provided conversation into a concise continuation-safe "
+        "summary. Preserve facts, decisions, open tasks, tool results, file "
+        "paths, commands, identifiers, constraints, and user preferences. "
+        "Return only the compacted context."
+    )
+    if not instructions:
+        return bridge_instructions
+    return f"{bridge_instructions}\n\nOriginal compaction instructions:\n{instructions}"
+
+
 def _resolve_model_provider_for_responses(
     model: str,
     custom_llm_provider: Optional[str],
@@ -1963,9 +1981,19 @@ def compact_responses(
         litellm_logging_obj: LiteLLMLoggingObj = kwargs.get("litellm_logging_obj")  # type: ignore
         litellm_call_id: Optional[str] = kwargs.get("litellm_call_id", None)
         _is_async = kwargs.pop("acompact_responses", False) is True
+        use_chat_completions_api = _pop_use_chat_completions_api_kw(kwargs)
 
         # get llm provider logic
         litellm_params = GenericLiteLLMParams(**kwargs)
+
+        _stripped_model, _from_chat_completions_prefix = (
+            _normalize_openai_chat_completions_responses_model(model)
+        )
+        model = _stripped_model
+        local_vars["model"] = model
+        use_chat_completions_api = (
+            use_chat_completions_api or _from_chat_completions_prefix
+        )
 
         (
             model,
@@ -1991,6 +2019,29 @@ def compact_responses(
         if custom_llm_provider is None:
             raise ValueError("custom_llm_provider is required but passed as None")
 
+        local_vars.update(kwargs)
+
+        if use_chat_completions_api is True:
+            local_vars["instructions"] = (
+                _build_compact_responses_bridge_instructions(instructions)
+            )
+            response_api_optional_params: ResponsesAPIOptionalRequestParams = (
+                ResponsesAPIRequestUtils.get_requested_response_api_optional_param(
+                    local_vars
+                )
+            )
+            return litellm_completion_transformation_handler.response_api_handler(
+                model=model,
+                input=input,
+                responses_api_request=response_api_optional_params,
+                custom_llm_provider=custom_llm_provider,
+                _is_async=_is_async,
+                stream=False,
+                extra_headers=extra_headers,
+                extra_body=extra_body,
+                **kwargs,
+            )
+
         # get provider config
         responses_api_provider_config: Optional[BaseResponsesAPIConfig] = (
             ProviderConfigManager.get_provider_responses_api_config(
@@ -2003,8 +2054,6 @@ def compact_responses(
             raise ValueError(
                 f"COMPACT responses is not supported for {custom_llm_provider}"
             )
-
-        local_vars.update(kwargs)
 
         # Build optional params for compact endpoint
         response_api_optional_params: ResponsesAPIOptionalRequestParams = (

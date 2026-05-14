@@ -264,6 +264,51 @@ class TestUseResponsesApiBridgeFlag:
     @patch(
         "litellm.responses.main.litellm_completion_transformation_handler.response_api_handler"
     )
+    @patch("litellm.responses.main.base_llm_http_handler.compact_response_api_handler")
+    def test_compact_responses_bridge_used_when_flag_true(
+        self, mock_native_compact_handler, mock_bridge_handler
+    ):
+        """Compact should use the chat-completions bridge for bridge-only deployments."""
+        mock_bridge_handler.return_value = ResponsesAPIResponse(
+            id="resp_compact",
+            model="openai/my-custom-model",
+            created_at=1234567890,
+            output=[
+                {
+                    "type": "message",
+                    "content": [{"type": "text", "text": "Compacted context"}],
+                }
+            ],
+            usage=ResponseAPIUsage(
+                input_tokens=10, output_tokens=5, total_tokens=15
+            ),
+        )
+
+        result = litellm.compact_responses(
+            model="openai/my-custom-model",
+            input=[{"role": "user", "content": "Hello"}],
+            instructions="Keep project details",
+            use_chat_completions_api=True,
+            litellm_logging_obj=MagicMock(),
+        )
+
+        mock_native_compact_handler.assert_not_called()
+        mock_bridge_handler.assert_called_once()
+        call_kwargs = mock_bridge_handler.call_args.kwargs
+        assert call_kwargs["stream"] is False
+        assert "use_chat_completions_api" not in call_kwargs
+        assert (
+            call_kwargs["responses_api_request"]["instructions"]
+            .startswith("Compact the provided conversation")
+        )
+        assert "Keep project details" in call_kwargs["responses_api_request"][
+            "instructions"
+        ]
+        assert result.id == "resp_compact"
+
+    @patch(
+        "litellm.responses.main.litellm_completion_transformation_handler.response_api_handler"
+    )
     @patch(
         "litellm.responses.main.ProviderConfigManager.get_provider_responses_api_config"
     )
